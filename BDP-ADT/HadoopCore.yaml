@@ -683,7 +683,7 @@ policy_types:
 
   tosca.policies.Scaling.MiCADO.VirtualMachine.CPU.datanode:
     derived_from: tosca.policies.Scaling.MiCADO
-    description: base MiCADO policy defining data sources, constants, queries, alerts, limits and rules
+    description: CPU-based VM scaling policy
     properties:
       alerts:
         type: list
