@@ -1,8 +1,8 @@
 MICADO_MASTER="IP address of MiCADO Master"
 MICADO_PORT="443"
 MICADO_WORKER="$MICADO_MASTER"
-FRONTEND_NAME="hdp"
-APP_ID="hdp"
+FRONTEND_NAME="bdp"
+APP_ID="bdp"
 SSL_USER="admin"
 SSL_PASS="admin"
 ###########################################################################
