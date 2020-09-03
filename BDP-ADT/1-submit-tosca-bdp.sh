@@ -25,7 +25,9 @@ if [ -z "$SSL_PASS" ]; then
 fi
 
 echo "Submitting bdp.yaml to MiCADO at $MICADO_MASTER with appid \"$APP_ID\"..."
-curl --insecure -s -F file=@"bdp.yaml" -F id=$APP_ID -F params='{"min_workers": 3, "max_workers": 25}' -X POST -u "$SSL_USER":"$SSL_PASS" https://$MICADO_MASTER:$MICADO_PORT/toscasubm$
+#curl --insecure -s -F file=@"bdp.yaml" -F id=$APP_ID -F params='{"min_workers": 3, "max_workers": 25}' -X POST -u "$SSL_USER":"$SSL_PASS" https://$MICADO_MASTER:$MICADO_PORT/toscasubm$
+curl --insecure -s -F file=@"bdp.yaml" -F id=$APP_ID -X POST -u "$SSL_USER":"$SSL_PASS" https://$MICADO_MASTER:$MICADO_PORT/toscasubm$
+
 
 
 
