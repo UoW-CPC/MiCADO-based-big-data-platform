@@ -1,0 +1,408 @@
+tosca_definitions_version: tosca_simple_yaml_1_0
+
+imports:
+  - https://raw.githubusercontent.com/micado-scale/tosca/develop/micado_types.yaml
+
+repositories:
+  docker_hub: https://hub.docker.com/
+
+description: ADT for Hadoop BigData platform on EC2 using StatefulSet
+
+topology_template:
+  node_templates:
+
+    # Describe VMs
+    hdp-master:
+      type: tosca.nodes.MiCADO.EC2.Compute
+      properties:
+        region_name: ADD_YOUR_REGION_NAME (e.g. us-east-2)
+        image_id: ADD_YOUR_IMAGE_ID (e.g. ami-0d03add87774b12c5)
+        instance_type: ADD_INSTANCE_TYPE (e.g. t2.xlarge)
+        key_name: ADD_YOUR_KEY-NAME (e.g. your_ssh_key)
+        security_group_ids:
+          - ADD_YOUR_SECURITY_GROUP_ID (e.g. sg-07d111ddf11da2d20)
+      interfaces:
+        Occopus:
+          create:
+            inputs:
+              interface_cloud: ec2
+              #root_block_device: {"volume_size": "50"}
+              endpoint_cloud: ADD_YOUR_ENDPOINT (e.g. https://ec2.us-east-2.amazonaws.com)
+
+    hdp-slave:
+      type: tosca.nodes.MiCADO.EC2.Compute
+      properties:
+        region_name: ADD_YOUR_REGION_NAME (e.g. us-east-2)
+        image_id: ADD_YOUR_IMAGE_ID (e.g. ami-0d03add87774b12c5)
+        instance_type: ADD_INSTANCE_TYPE (e.g. t2.xlarge)
+        key_name: ADD_YOUR_KEY-NAME (e.g. your_ssh_key)
+        security_group_ids:
+          - ADD_YOUR_SECURITY_GROUP_ID (e.g. sg-07d111ddf11da2d20)
+      interfaces:
+        Occopus:
+          create:
+            inputs:
+              interface_cloud: ec2
+              #root_block_device: {"volume_size": "50"}
+              endpoint_cloud: ADD_YOUR_ENDPOINT (e.g. https://ec2.us-east-2.amazonaws.com)
+      capabilities:
+        scalable:
+          properties:
+            min_instances: 3
+            max_instances: 5
+
+    # Describe common
+    hdfs-config:
+      type: tosca.nodes.MiCADO.Container.Config.Kubernetes
+      properties:
+        data:
+          HDFS-SITE.XML_dfs.namenode.name.dir: "/data/namenode"
+          HDFS-SITE.XML_dfs.datanode.data.dir: "/data/datanode"
+          HDFS-SITE.XML_dfs.namenode.rpc-address: "hdfs-namenode-0.hdfs-namenode:9820"
+          HDFS-SITE.XML_dfs.permissions: "false"
+          HDFS-SITE.XML_hadoop.tmp.dir: "/tmp"
+          LOG4J.PROPERTIES_log4j.rootLogger: "INFO, stdout"
+          LOG4J.PROPERTIES_log4j.appender.stdout: "org.apache.log4j.ConsoleAppender"
+          LOG4J.PROPERTIES_log4j.appender.stdout.layout: "org.apache.log4j.PatternLayout"
+          LOG4J.PROPERTIES_log4j.appender.stdout.layout.ConversionPattern: "%d{yyyy-MM-dd HH:mm:ss} %-5p %c{1}:%L - %m%n"
+          CORE-SITE.XML_fs.defaultFS: "hdfs://hdfs-namenode-0.hdfs-namenode:9820"
+          CORE-SITE.XML_hadoop.tmp.dir: "/tmp"
+
+    emptydir-volume:
+      type: tosca.nodes.MiCADO.Container.Volume.EmptyDir
+      properties:
+        name: data
+        path: /data
+
+    # Describe HDFS-NameNode
+    hdfs-namenode:
+      type: tosca.nodes.MiCADO.Container.Application.Docker.StatefulSet
+      properties:
+        image: flokkr/hadoop
+        args: ["hdfs", "namenode"]
+        envFrom:
+        - configMapRef:
+            name: hdfs-config
+        labels:
+          component: namenode
+        ports:
+        - port: 9870
+          nodePort: 30010
+          metadata:
+            name: hdfs-namenode-public
+        - port: 9870
+          clusterIP: None
+          metadata:
+            name: hdfs-namenode
+      requirements:
+      - host: hdp-master
+      - volume: emptydir-volume
+      - container: hdfs-namenode-init
+      interfaces:
+        Kubernetes:
+          create:
+            inputs:
+              spec:
+                serviceName: hdfs-namenode
+
+    hdfs-namenode-init:
+      type: tosca.nodes.MiCADO.Container.Application.Docker.Init
+      requirements:
+      - volume: emptydir-volume
+      properties:
+        name: hdfs-init
+        image: flokkr/hadoop
+        args: ["hadoop","version"]
+        env:
+        - name: "ENSURE_NAMENODE_DIR"
+          value: "/data/namenode"
+        envFrom:
+        - configMapRef:
+            name: hdfs-config
+
+    # Describe HDFS-DataNode
+    hdfs-datanode:
+      type: tosca.nodes.MiCADO.Container.Application.Docker.StatefulSet
+      properties:
+        image: flokkr/hadoop
+        args: ["hdfs", "datanode"]
+        env:        
+        - name: "WAITFOR"
+          value: "hdfs-namenode-0.hdfs-namenode:9820"
+        envFrom:
+        - configMapRef:
+            name: hdfs-config
+        labels:
+          component: datanode
+        ports:
+        - port: 9874
+          nodePort: 30020
+          metadata:
+            name: hdfs-datanode-public
+        - port: 9874
+          clusterIP: None
+          metadata:
+            name: hdfs-datanode
+      requirements:
+      - host: hdp-slave
+      - volume: emptydir-volume
+      interfaces:
+        Kubernetes:
+          create:
+            inputs:
+              spec:
+                serviceName: hdfs-datanode
+                replicas: 3
+                template:
+                  spec:
+                    affinity:
+                      podAntiAffinity:
+                        requiredDuringSchedulingIgnoredDuringExecution:
+                        - labelSelector:
+                            matchExpressions:
+                              - key: "app"
+                                operator: In
+                                values:
+                                - hdfs
+                          topologyKey: "kubernetes.io/hostname"
+
+    # Describe YARN common
+    yarn-config:
+      type: tosca.nodes.MiCADO.Container.Config.Kubernetes
+      properties:
+        data:
+          MAPRED-SITE.XML_mapreduce.framework.name: "yarn"
+          MAPRED-SITE.XML_yarn.app.mapreduce.am.env: "HADOOP_MAPRED_HOME=/opt/hadoop"
+          MAPRED-SITE.XML_mapreduce.map.env: "HADOOP_MAPRED_HOME=/opt/hadoop"
+          MAPRED-SITE.XML_mapreduce.reduce.env: "HADOOP_MAPRED_HOME=/opt/hadoop"
+          YARN-SITE.XML_yarn.resourcemanager.hostname: "yarn-resourcemanager-0.yarn-resourcemanager"
+          YARN-SITE.XML_yarn.resourcemanager.bind-host: "0.0.0.0"
+          YARN-SITE.XML_yarn.nodemanager.bind-host: "0.0.0.0"
+          YARN-SITE.XML_yarn.webapp.ui2.enable: "true"
+          YARN-SITE.XML_yarn.nodemanager.pmem-check-enabled: "false"
+          YARN-SITE.XML_yarn.nodemanager.delete.debug-delay-sec: "600"
+          YARN-SITE.XML_yarn.nodemanager.vmem-check-enabled: "false"
+          YARN-SITE.XML_yarn.nodemanager.aux-services: "mapreduce_shuffle"
+          YARN-SITE.XML_yarn.nodemanager.auxservices.mapreduce.shuffle.class: "org.apache.hadoop.mapred.ShuffleHandler"
+          YARN-SITE.XML_yarn.timeline-service.hostname: yarn-timeline-0.yarn-timeline
+          YARN-SITE.XML_yarn.log.server.url: http://yarn-timeline-0.yarn-timeline:8188/applicationhistory/logs/
+          CAPACITY-SCHEDULER.XML_yarn.scheduler.capacity.maximum-applications: "10000"
+          CAPACITY-SCHEDULER.XML_yarn.scheduler.capacity.maximum-am-resource-percent: "0.1"
+          CAPACITY-SCHEDULER.XML_yarn.scheduler.capacity.resource-calculator: "org.apache.hadoop.yarn.util.resource.DefaultResourceCalculator"
+          CAPACITY-SCHEDULER.XML_yarn.scheduler.capacity.root.queues: "default"
+          CAPACITY-SCHEDULER.XML_yarn.scheduler.capacity.root.default.capacity: "100"
+          CAPACITY-SCHEDULER.XML_yarn.scheduler.capacity.root.default.user-limit-factor: "1"
+          CAPACITY-SCHEDULER.XML_yarn.scheduler.capacity.root.default.maximum-capacity: "100"
+          CAPACITY-SCHEDULER.XML_yarn.scheduler.capacity.root.default.state: "RUNNING"
+          CAPACITY-SCHEDULER.XML_yarn.scheduler.capacity.root.default.acl_submit_applications: "*"
+          CAPACITY-SCHEDULER.XML_yarn.scheduler.capacity.root.default.acl_administer_queue: "*"
+          CAPACITY-SCHEDULER.XML_yarn.scheduler.capacity.node-locality-delay: "40"
+          CAPACITY-SCHEDULER.XML_yarn.scheduler.capacity.queue-mappings: ""
+          CAPACITY-SCHEDULER.XML_yarn.scheduler.capacity.queue-mappings-override.enable: "false"
+
+    # Describe YARN ResourceManager
+    yarn-resourcemanager:
+      type: tosca.nodes.MiCADO.Container.Application.Docker.StatefulSet
+      properties:
+        image: flokkr/hadoop
+        args: ["yarn", "resourcemanager"]
+        envFrom:
+        - configMapRef:
+            name: yarn-config
+        - configMapRef:
+            name: hdfs-config
+        labels:
+          component: resourcemanager
+        ports:
+        - port: 8088
+          nodePort: 30040
+          metadata:
+            name: yarn-resourcemanager-public
+        - port: 8088
+          clusterIP: None
+          metadata:
+            name: yarn-resourcemanager
+      requirements:
+      - host: hdp-master
+      - volume: emptydir-volume
+      interfaces:
+        Kubernetes:
+          create:
+            inputs:
+              spec:
+                serviceName: yarn-resourcemanager
+
+    # Describe YARN NodeManager
+    yarn-nodemanager:
+      type: tosca.nodes.MiCADO.Container.Application.Docker.StatefulSet
+      properties:
+        image: flokkr/hadoop
+        args: ["yarn", "nodemanager"]
+        env:
+        - name: WAITFOR
+          value: "yarn-resourcemanager-0.yarn-resourcemanager:8031"
+        envFrom:
+        - configMapRef:
+            name: yarn-config
+        - configMapRef:
+            name: hdfs-config
+        labels:
+          component: nodemanager
+        ports:
+        - port: 8042
+          nodePort: 30030
+          metadata:
+            name: yarn-nodemanager-public
+        - port: 8042
+          clusterIP: None
+          metadata:
+            name: yarn-nodemanager
+      requirements:
+      - host: hdp-slave
+      - volume: emptydir-volume
+      interfaces:
+        Kubernetes:
+          create:
+            inputs:
+              spec:
+                serviceName: yarn-nodemanager
+                replicas: 3
+                template:
+                  spec:
+                    affinity:
+                      podAntiAffinity:
+                        requiredDuringSchedulingIgnoredDuringExecution:
+                        - labelSelector:
+                            matchExpressions:
+                              - key: "app"
+                                operator: In
+                                values:
+                                - yarn
+                          topologyKey: "kubernetes.io/hostname"
+
+    # Describe YARN Timeline
+    yarn-timeline:
+      type: tosca.nodes.MiCADO.Container.Application.Docker.StatefulSet
+      properties:
+        image: flokkr/hadoop
+        args: ["yarn", "timelineserver"]
+        envFrom:
+        - configMapRef:
+            name: yarn-config
+        - configMapRef:
+            name: hdfs-config
+        labels:
+          component: timeline
+        ports:
+        - port: 8188
+          nodePort: 30050
+          metadata:
+            name: yarn-timeline-public
+        - port: 8188
+          clusterIP: None
+          metadata:
+            name: yarn-timeline
+      requirements:
+      - host: hdp-master
+      - volume: emptydir-volume
+      interfaces:
+        Kubernetes:
+          create:
+            inputs:
+              spec:
+                serviceName: yarn-timeline
+
+    # Describe Zookeeper
+    zookeeper-config:
+      type: tosca.nodes.MiCADO.Container.Config.Kubernetes
+      properties:
+        data:
+          log4j.properties: |-
+            log4j.rootLogger=INFO, stdout
+            log4j.appender.stdout=org.apache.log4j.ConsoleAppender
+            log4j.appender.stdout.layout=org.apache.log4j.PatternLayout
+            log4j.appender.stdout.layout.ConversionPattern=%d{yyyy-MM-dd HH:mm:ss} %-5p %c{1}:%L - %m%n
+          zoo.cfg: |-
+            tickTime=2000
+            dataDir=/data/zookeeper
+            clientPort=2181
+            initLimit=5
+            syncLimit=2
+            server.0=zookeeper-0.zookeeper:2888:3888
+
+    zookeeper:
+      type: tosca.nodes.MiCADO.Container.Application.Docker.StatefulSet
+      properties:
+        image: zookeeper:3.5.6
+        env:
+        - name: ZOO_SERVERS
+          value: server.0=zookeeper-0.zookeeper:2888:3888;2181
+        - name: ZOO_MY_ID
+          value: "0"
+        labels:
+          component: zookeeper
+        ports:
+        - port: 1234
+          clusterIP: None
+          metadata:
+            name: zookeeper
+      requirements:
+      - host: hdp-master
+      interfaces:
+        Kubernetes:
+          create:
+            inputs:
+              spec:
+                serviceName: zookeeper
+
+    # Describe Kafka
+    kafka-config:
+      type: tosca.nodes.MiCADO.Container.Config.Kubernetes
+      properties:
+        data:
+          SERVER.CFG_zookeeper.connect: zookeeper-0.zookeeper:2181
+          SERVER.CFG_num.partitions: "1"
+          SERVER.CFG_broker.id: "1"
+          SERVER.CFG_log.dir: /data/kafkalog
+          SERVER.CFG_offsets.topic.replication.factor: "1"
+
+    kafka-broker:
+      type: tosca.nodes.MiCADO.Container.Application.Docker.StatefulSet
+      properties:
+        image: flokkr/kafka
+        args:
+        - kafka-server-start.sh
+        - /opt/kafka/config/server.cfg
+        env:
+        - name: WAITFOR
+          value: "zookeeper-0.zookeeper:2181"
+        envFrom:
+        - configMapRef:
+            name: kafka-config
+        labels:
+          component: broker
+        ports:
+        - port: 9092
+          nodePort: 30060
+          metadata:
+            name: kafka-broker-public
+        - port: 9092
+          clusterIP: None
+          metadata:
+            name: kafka-broker
+      requirements:
+      - host: hdp-master
+      - volume: emptydir-volume
+      interfaces:
+        Kubernetes:
+          create:
+            inputs:
+              spec:
+                serviceName: kafka-broker
+
+  policies:
+    - monitoring:
+        type: tosca.policies.Monitoring.MiCADO
+        properties:
+          enable_container_metrics: true
+          enable_node_metrics: true
